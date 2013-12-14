@@ -6,5 +6,7 @@ multiple syncing approaches, while keeping the high level API consistent.
 Currently it is a work in progress. It is likely the API will change, based
 on evolving use case and feedback.
 
+Original author: Andre-John Mas 2013-12-13
+
 Licensed under LGPL
 

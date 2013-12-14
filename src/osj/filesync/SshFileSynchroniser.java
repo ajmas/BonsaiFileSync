@@ -9,9 +9,11 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Properties;
 import java.util.Set;
+import java.util.Vector;
 
 import com.jcraft.jsch.Channel;
 import com.jcraft.jsch.ChannelSftp;
+import com.jcraft.jsch.ChannelSftp.LsEntry;
 import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.Session;
@@ -55,12 +57,13 @@ public class SshFileSynchroniser implements FileSynchroniser {
 		}
 
 		if (syncDirection == SyncDirection.TO_REMOTE) {
-			visitAndCopyToRemote(configuration.getLocalConfiguration(),
-					configuration.getRemoteConfiguration(), force,
-					configuration.getPathFilter(), pathFilter);
+			visitAndCopy(configuration.getLocalConfiguration(),
+					configuration.getRemoteConfiguration(), syncDirection,
+					force, configuration.getPathFilter(), pathFilter);
 		} else if (syncDirection == SyncDirection.TO_LOCAL) {
-			// visitAndCopy(remoteBasePath, localBasePath, force,
-			// configuration.getPathFilter(), pathFilter );
+			visitAndCopy(configuration.getLocalConfiguration(),
+					configuration.getRemoteConfiguration(), syncDirection,
+					force, configuration.getPathFilter(), pathFilter);		
 		} else {
 			throw new RuntimeException("two way sync is not implemented");
 		}
@@ -68,8 +71,8 @@ public class SshFileSynchroniser implements FileSynchroniser {
 	}
 
 	// ref: http://stackoverflow.com/questions/199624/scp-via-java
-	private void visitAndCopyToRemote(EndpointConfiguration localEndpoint,
-			EndpointConfiguration remoteEndpoint, boolean force,
+	private void visitAndCopy(EndpointConfiguration localEndpoint,
+			EndpointConfiguration remoteEndpoint, SyncDirection syncDirection, boolean force,
 			PathFilter... pathFilters) throws IOException {
 
 		File localBasePath = new File(localEndpoint.getURI().getPath());
@@ -108,41 +111,12 @@ public class SshFileSynchroniser implements FileSynchroniser {
 
 			ChannelSftp sftp = (ChannelSftp) channel;
 
-			File folder = null;
-			while (unvisitedFolders.size() > 0
-					&& (folder = unvisitedFolders.remove(0)) != null) {
-				File[] children = folder.listFiles();
-				if (children.length > 0) {
-					for (File localFile : children) {
-						String path = getPath(localBasePath, localFile);
-
-						// if the path for the folder or file is not accepted
-						// continue to next item
-						if (!accept(path, pathFilters)) {
-							continue;
-						}
-
-						String remotePath = remoteURI.getPath() + "/" + path;
-
-						SftpATTRS remoteFileAttr = getRemoteFileAttr(sftp,
-								remotePath);
-						if (localFile.isDirectory()) {
-							unvisitedFolders.add(localFile);
-							if (remoteFileAttr == null) {
-								System.out.println("mkdir: " + localFile.getAbsolutePath());
-								sftp.mkdir(remotePath);
-							}
-						} else {
-							if (force || remoteFileAttr == null || (localFile.lastModified() / 1000) > remoteFileAttr.getMTime()) {
-								System.out.println("copy: " + localFile.getAbsolutePath() + " to " + remotePath);
-								sftp.put(localFile.getAbsolutePath(), remotePath);
-							}
-						}
-					}
-				}
-
+			if (syncDirection == SyncDirection.TO_REMOTE) {
+				visitAndCopyToRemote(sftp,localBasePath,remoteURI.getPath(),force,pathFilters);
+			} else if (syncDirection == SyncDirection.TO_LOCAL) {
+				visitAndCopyToLocal(sftp,localBasePath,remoteURI.getPath(),force,pathFilters);
 			}
-
+			
 		} catch (JSchException e) {
 			System.out.println(userName);
 			e.printStackTrace();
@@ -161,6 +135,98 @@ public class SshFileSynchroniser implements FileSynchroniser {
 
 	}
 
+	private void visitAndCopyToRemote(ChannelSftp sftp, File localBasePath,
+			String remoteBasePath, boolean force,
+			PathFilter... pathFilters) throws SftpException {
+		
+		List<File> unvisitedFolders = new ArrayList<File>();
+		unvisitedFolders.add(localBasePath);
+		
+		File folder = null;
+		while (unvisitedFolders.size() > 0
+				&& (folder = unvisitedFolders.remove(0)) != null) {
+			File[] children = folder.listFiles();
+			if (children.length > 0) {
+				for (File localFile : children) {
+					String path = getPath(localBasePath, localFile);
+
+					// if the path for the folder or file is not accepted
+					// continue to next item
+					if (!accept(path, pathFilters)) {
+						continue;
+					}
+
+					String remotePath = remoteBasePath + "/" + path;
+
+					SftpATTRS remoteFileAttr = getRemoteFileAttr(sftp,
+							remotePath);
+					if (localFile.isDirectory()) {
+						unvisitedFolders.add(localFile);
+						if (remoteFileAttr == null) {
+							System.out.println("mkdir: " + localFile.getAbsolutePath());
+							sftp.mkdir(remotePath);
+						}
+					} else {
+						if (force || remoteFileAttr == null || (localFile.lastModified() / 1000) > remoteFileAttr.getMTime()) {
+							System.out.println("copy: " + localFile.getAbsolutePath() + " to " + remotePath);
+							sftp.put(localFile.getAbsolutePath(), remotePath);
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	private void visitAndCopyToLocal(ChannelSftp sftp, File localBasePath,
+			String remoteBasePath, boolean force,
+			PathFilter... pathFilters) throws SftpException {
+		
+		
+		List<String> unvisitedFolders = new ArrayList<String>();
+		unvisitedFolders.add(remoteBasePath);
+		
+		String folder = null;
+		while (unvisitedFolders.size() > 0
+				&& (folder = unvisitedFolders.remove(0)) != null) {
+			
+			folder = remoteBasePath + "/" + folder;
+			@SuppressWarnings("unchecked")
+			Vector<LsEntry> children = sftp.ls(folder);
+			if (children.size() > 0) {
+				for (LsEntry remoteEntry : children) {
+					String absoluteRemotePath = folder + "/" + remoteEntry.getFilename();
+
+					// TODO
+					String path = "";
+					// if the path for the folder or file is not accepted
+					// continue to next item
+					if (!accept(path, pathFilters)) {
+						continue;
+					}
+
+					String remotePath = folder + "/" + path;
+					
+					if (remoteEntry.getAttrs().isDir()) {
+						unvisitedFolders.add(absoluteRemotePath);
+						
+						File localFile = new File(localBasePath, path);
+						if (!localFile.exists()) {
+							System.out.println("mkdir: " + localFile.getAbsolutePath());
+							localFile.mkdir();
+						}
+					} else {
+//						if (force || remoteFileAttr == null || (localFile.lastModified() / 1000) > remoteFileAttr.getMTime()) {
+//							System.out.println("copy: " + localFile.getAbsolutePath() + " to " + remotePath);
+//							sftp.put(localFile.getAbsolutePath(), remotePath);
+//						}
+					}
+				}
+			}
+		}
+		
+	}
+	
+	
 	private SftpATTRS getRemoteFileAttr(ChannelSftp sftp, String path) {
 		try {
 			return sftp.lstat(path);
@@ -189,5 +255,15 @@ public class SshFileSynchroniser implements FileSynchroniser {
 		}
 		return path;
 	}
+	
+//	private String getPath(File parentFile, LsEntry childFile) {
+//		childFile.getAttrs().
+//		String path = childFile.getAbsolutePath().substring(
+//				parentFile.getAbsolutePath().length());
+//		if (path.startsWith("/")) {
+//			path = path.substring(1);
+//		}
+//		return path;
+//	}
 
 }
