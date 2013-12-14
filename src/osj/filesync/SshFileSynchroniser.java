@@ -204,7 +204,7 @@ public class SshFileSynchroniser implements FileSynchroniser {
 						continue;
 					}
 
-					String remotePath = folder + "/" + path;
+					//String remotePath = folder + "/" + path;
 					
 					if (remoteEntry.getAttrs().isDir()) {
 						unvisitedFolders.add(absoluteRemotePath);
